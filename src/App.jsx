@@ -134,6 +134,31 @@ async function deleteBarn(barnId, accessToken) {
   }
 }
 
+async function createInquiry(inquiry, accessToken) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/inquiries`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify(inquiry),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || "Couldn't send that request");
+  return Array.isArray(data) ? data[0] : data;
+}
+
+async function fetchMyInquiries(ownerId, accessToken) {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/inquiries?owner_id=eq.${ownerId}&select=*,barns(name,town,state)&order=created_at.desc`,
+    { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${accessToken}` } }
+  );
+  const data = await res.json().catch(() => []);
+  return Array.isArray(data) ? data : [];
+}
+
 // A small curated palette so real, owner-submitted barns still get a
 // pleasant, consistent illustration even though owners never pick colors
 // themselves — picked deterministically from the barn's own id.
@@ -160,6 +185,7 @@ function mapDbBarnToAppShape(row) {
   const colors = colorsForId(row.id);
   return {
     id: row.id,
+    owner_id: row.owner_id,
     name: row.name,
     keeper: row.profiles?.full_name || "the owner",
     town: row.town,
@@ -1122,8 +1148,36 @@ function BarnCard({ barn, onOpen, saved, onToggleSave, distance }) {
 
 /* --------------------------------- DETAIL ---------------------------------- */
 
-function BarnDetail({ barn, onBack, saved, onToggleSave, distance }) {
+function BarnDetail({ barn, onBack, saved, onToggleSave, distance, session }) {
   const [sent, setSent] = useState(false);
+  const [showInquiry, setShowInquiry] = useState(false);
+  const [message, setMessage] = useState(`Hi ${barn.keeper}, I'm interested in boarding at ${barn.name}. Could you tell me more about availability?`);
+  const [sending, setSending] = useState(false);
+  const [inquiryError, setInquiryError] = useState("");
+  const [inquirySent, setInquirySent] = useState(false);
+
+  const sendInquiry = async () => {
+    setSending(true);
+    setInquiryError("");
+    try {
+      await createInquiry(
+        {
+          barn_id: barn.id,
+          owner_id: barn.owner_id,
+          renter_id: session.user.id,
+          renter_name: session.profile?.full_name || "",
+          renter_email: session.user.email || "",
+          message,
+        },
+        session.access_token
+      );
+      setInquirySent(true);
+    } catch (err) {
+      setInquiryError(err.message || "Something went wrong sending that");
+    } finally {
+      setSending(false);
+    }
+  };
   const [photoIndex, setPhotoIndex] = useState(0);
   const photo = GALLERY[photoIndex];
   const nextPhoto = () => setPhotoIndex((i) => (i + 1) % GALLERY.length);
@@ -1250,26 +1304,97 @@ function BarnDetail({ barn, onBack, saved, onToggleSave, distance }) {
             </div>
           </div>
 
-          <div className="mt-9 pt-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4" style={{ borderTop: "1px solid rgba(42,36,29,0.15)" }}>
-            <div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace" }} className="text-2xl font-bold" >
-                ${barn.price}<span className="text-sm font-normal" style={{ color: "#5C5240" }}> / month · {barn.board}</span>
+          <div className="mt-9 pt-6" style={{ borderTop: "1px solid rgba(42,36,29,0.15)" }}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace" }} className="text-2xl font-bold" >
+                  ${barn.price}<span className="text-sm font-normal" style={{ color: "#5C5240" }}> / month · {barn.board}</span>
+                </div>
+                <div className="text-xs mt-1" style={{ color: "#5C5240" }}>{barn.stalls} stalls typically available</div>
               </div>
-              <div className="text-xs mt-1" style={{ color: "#5C5240" }}>{barn.stalls} stalls typically available</div>
+
+              {barn.isReal ? (
+                !showInquiry && (
+                  <button
+                    onClick={() => setShowInquiry(true)}
+                    className="px-6 py-3 rounded-full font-semibold text-sm transition hover:opacity-90"
+                    style={{ background: "#7A2E28", color: "#F6EFDD", fontFamily: "'Work Sans', sans-serif" }}
+                  >
+                    Request a stall
+                  </button>
+                )
+              ) : (
+                <button
+                  onClick={() => setSent(true)}
+                  className="px-6 py-3 rounded-full font-semibold text-sm transition hover:opacity-90"
+                  style={{ background: "#7A2E28", color: "#F6EFDD", fontFamily: "'Work Sans', sans-serif" }}
+                >
+                  {sent ? "Inquiry sent ✓" : "Request a stall"}
+                </button>
+              )}
             </div>
-            <button
-              onClick={() => setSent(true)}
-              className="px-6 py-3 rounded-full font-semibold text-sm transition hover:opacity-90"
-              style={{ background: "#7A2E28", color: "#F6EFDD", fontFamily: "'Work Sans', sans-serif" }}
-            >
-              {sent ? "Inquiry sent ✓" : "Request a stall"}
-            </button>
+
+            {!barn.isReal && sent && (
+              <p className="text-xs mt-3" style={{ color: "#5C5240" }}>
+                This is a fictional demo barn — no message was actually sent to anyone.
+              </p>
+            )}
+
+            {barn.isReal && !session && (
+              <p className="text-xs mt-3" style={{ color: "#5C5240" }}>
+                Log in to request a stall at this barn.
+              </p>
+            )}
+
+            {barn.isReal && showInquiry && !inquirySent && (
+              <div className="mt-4 rounded-xl p-4" style={{ background: "rgba(42,36,29,0.05)" }}>
+                <label className="block text-xs font-semibold mb-1.5" style={{ color: "#5C5240" }}>
+                  Message to {barn.keeper}
+                </label>
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={4}
+                  className="w-full px-3.5 py-2.5 rounded-lg text-sm outline-none resize-none"
+                  style={{ background: "#F3ECD8", color: "#2A241D" }}
+                />
+                {inquiryError && (
+                  <div
+                    className="text-sm px-3.5 py-3 rounded-lg font-medium mt-3"
+                    style={{ background: "rgba(122,46,40,0.12)", color: "#7A2E28", border: "1px solid rgba(122,46,40,0.3)" }}
+                  >
+                    ⚠ {inquiryError}
+                  </div>
+                )}
+                <div className="flex items-center gap-3 mt-3">
+                  <button
+                    onClick={sendInquiry}
+                    disabled={sending || !message.trim()}
+                    className="text-sm font-semibold px-5 py-2.5 rounded-full transition hover:opacity-90 disabled:opacity-60"
+                    style={{ background: "#7A2E28", color: "#F6EFDD" }}
+                  >
+                    {sending ? "Sending…" : "Send request"}
+                  </button>
+                  <button
+                    onClick={() => setShowInquiry(false)}
+                    className="text-sm font-semibold px-4 py-2.5 rounded-full"
+                    style={{ color: "#5C5240" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {barn.isReal && inquirySent && (
+              <div className="mt-4 rounded-xl p-4 flex items-center gap-2" style={{ background: "rgba(76,107,79,0.12)" }}>
+                <ShieldCheck size={16} style={{ color: "#4C6B4F" }} />
+                <p className="text-sm font-medium" style={{ color: "#2A241D" }}>
+                  Sent — {barn.keeper} will see this in their dashboard.
+                </p>
+              </div>
+            )}
           </div>
-          {sent && (
-            <p className="text-xs mt-3" style={{ color: "#5C5240" }}>
-              This is a concept demo — no message was actually sent to {barn.keeper}.
-            </p>
-          )}
         </div>
       </div>
     </div>
@@ -1933,9 +2058,41 @@ function MyBarnCard({ barn, onDelete }) {
   );
 }
 
+function InquiryCard({ inquiry }) {
+  const when = inquiry.created_at ? new Date(inquiry.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+  return (
+    <div className="rounded-xl p-4" style={{ background: "#E4D8BE" }}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="font-bold text-sm" style={{ fontFamily: "'Bitter', serif", color: "#2A241D" }}>
+          {inquiry.renter_name || "A renter"}
+        </div>
+        <span className="text-[11px]" style={{ color: "#8A6D3B" }}>{when}</span>
+      </div>
+      <div className="text-xs mt-0.5" style={{ color: "#5C5240" }}>
+        about {inquiry.barns?.name || "your barn"} · {inquiry.renter_email}
+      </div>
+      <p className="text-sm mt-2.5 leading-snug" style={{ color: "#2A241D", fontFamily: "'Work Sans', sans-serif" }}>
+        {inquiry.message}
+      </p>
+      {inquiry.renter_email && (
+        <a
+          href={`mailto:${inquiry.renter_email}`}
+          className="inline-block mt-3 text-xs font-semibold px-4 py-2 rounded-full"
+          style={{ background: "#7A2E28", color: "#F6EFDD" }}
+        >
+          Reply by email
+        </a>
+      )}
+    </div>
+  );
+}
+
 function OwnerDashboard({ session }) {
   const [myBarns, setMyBarns] = useState([]);
   const [loadingBarns, setLoadingBarns] = useState(true);
+  const [inquiries, setInquiries] = useState([]);
+  const [loadingInquiries, setLoadingInquiries] = useState(true);
+  const [tab, setTab] = useState("barns"); // barns | inquiries
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
 
@@ -1952,8 +2109,21 @@ function OwnerDashboard({ session }) {
     }
   };
 
+  const loadInquiries = async () => {
+    setLoadingInquiries(true);
+    try {
+      const rows = await fetchMyInquiries(session.user.id, session.access_token);
+      setInquiries(rows);
+    } catch {
+      // quietly fine — the barns tab still works even if this fails
+    } finally {
+      setLoadingInquiries(false);
+    }
+  };
+
   useEffect(() => {
     loadBarns();
+    loadInquiries();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1975,10 +2145,31 @@ function OwnerDashboard({ session }) {
   return (
     <div className="max-w-4xl mx-auto px-5 md:px-8 pt-10 pb-24">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold" style={{ fontFamily: "'Bitter', serif", color: "#F6EFDD" }}>
-          Your barns
-        </h1>
-        {!showForm && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setTab("barns")}
+            className="text-sm font-semibold px-4 py-2 rounded-full transition"
+            style={{ background: tab === "barns" ? "#B78A4A" : "transparent", color: tab === "barns" ? "#1B2A1E" : "#F6EFDD" }}
+          >
+            Your barns
+          </button>
+          <button
+            onClick={() => setTab("inquiries")}
+            className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-full transition"
+            style={{ background: tab === "inquiries" ? "#B78A4A" : "transparent", color: tab === "inquiries" ? "#1B2A1E" : "#F6EFDD" }}
+          >
+            Inquiries
+            {inquiries.length > 0 && (
+              <span
+                className="text-[10px] font-bold px-1.5 rounded-full"
+                style={{ background: tab === "inquiries" ? "#1B2A1E" : "#7A2E28", color: "#F6EFDD" }}
+              >
+                {inquiries.length}
+              </span>
+            )}
+          </button>
+        </div>
+        {tab === "barns" && !showForm && (
           <button
             onClick={() => setShowForm(true)}
             className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-full transition hover:opacity-90"
@@ -1989,22 +2180,38 @@ function OwnerDashboard({ session }) {
         )}
       </div>
 
-      {showForm ? (
-        <div className="rounded-2xl p-6" style={{ background: "#E4D8BE" }}>
-          <BarnForm session={session} onCreated={handleCreated} onCancel={() => setShowForm(false)} />
-        </div>
-      ) : loadingBarns ? (
-        <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading your barns…</p>
-      ) : myBarns.length === 0 ? (
+      {tab === "barns" ? (
+        showForm ? (
+          <div className="rounded-2xl p-6" style={{ background: "#E4D8BE" }}>
+            <BarnForm session={session} onCreated={handleCreated} onCancel={() => setShowForm(false)} />
+          </div>
+        ) : loadingBarns ? (
+          <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading your barns…</p>
+        ) : myBarns.length === 0 ? (
+          <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
+            <p className="text-sm" style={{ color: "#C9C2AC" }}>
+              You haven't listed a barn yet. Click "Add a barn" to create your first listing.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {myBarns.map((b) => (
+              <MyBarnCard key={b.id} barn={b} onDelete={handleDelete} />
+            ))}
+          </div>
+        )
+      ) : loadingInquiries ? (
+        <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading inquiries…</p>
+      ) : inquiries.length === 0 ? (
         <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
           <p className="text-sm" style={{ color: "#C9C2AC" }}>
-            You haven't listed a barn yet. Click "Add a barn" to create your first listing.
+            No one has requested a stall yet. Once a renter reaches out about one of your barns, it'll show up here.
           </p>
         </div>
       ) : (
         <div className="space-y-3">
-          {myBarns.map((b) => (
-            <MyBarnCard key={b.id} barn={b} onDelete={handleDelete} />
+          {inquiries.map((inq) => (
+            <InquiryCard key={inq.id} inquiry={inq} />
           ))}
         </div>
       )}
@@ -2337,6 +2544,7 @@ function MainApp({ session, onLogout }) {
           saved={saved.includes(activeBarn.id)}
           onToggleSave={toggleSave}
           distance={activeBarnDistance}
+          session={session}
         />
       )}
     </div>
