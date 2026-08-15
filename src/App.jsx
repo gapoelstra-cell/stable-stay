@@ -3,7 +3,7 @@ import {
   MapPin, Star, Users, TreePine, Droplets, ShieldCheck, ChevronLeft, ChevronRight,
   Search, SlidersHorizontal, Award, Clock, Sparkles, Heart, Fence,
   Home as HomeIcon, Quote, X, LocateFixed, Map as MapIcon, List as ListIcon, Navigation,
-  ZoomIn, ZoomOut, RotateCcw, LogOut, Mail, Lock, User as UserIcon
+  ZoomIn, ZoomOut, RotateCcw, LogOut, Mail, Lock, User as UserIcon, Plus, Trash2
 } from "lucide-react";
 
 /* ---------------------------------- DATA ---------------------------------- */
@@ -73,6 +73,132 @@ async function fetchProfile(userId, accessToken) {
   });
   const rows = await res.json().catch(() => []);
   return Array.isArray(rows) ? rows[0] : null;
+}
+
+// Best-effort geocoding so a barn owner only has to type a town and state —
+// they never have to know or enter latitude/longitude themselves. If this
+// fails (no internet, address not found, etc.) the barn still saves fine,
+// it just won't have a map pin yet.
+async function geocodeTownState(town, state) {
+  try {
+    const query = encodeURIComponent(`${town}, ${state}, USA`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const data = await res.json();
+    if (data && data[0]) {
+      return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+    }
+  } catch {
+    // geocoding is a nice-to-have, not required for saving the barn
+  }
+  return { lat: null, lon: null };
+}
+
+async function createBarn(barn, accessToken) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/barns`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify(barn),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || "Couldn't save that barn");
+  return Array.isArray(data) ? data[0] : data;
+}
+
+async function fetchMyBarns(ownerId, accessToken) {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/barns?owner_id=eq.${ownerId}&select=*&order=created_at.desc`,
+    { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${accessToken}` } }
+  );
+  const data = await res.json().catch(() => []);
+  return Array.isArray(data) ? data : [];
+}
+
+async function deleteBarn(barnId, accessToken) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/barns?id=eq.${barnId}`, {
+    method: "DELETE",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.message || "Couldn't delete that barn");
+  }
+}
+
+// A small curated palette so real, owner-submitted barns still get a
+// pleasant, consistent illustration even though owners never pick colors
+// themselves — picked deterministically from the barn's own id.
+const ACCENT_PALETTE = [
+  { accent: "#4C6B4F", sky: "#8FAE8C" },
+  { accent: "#8A5A2B", sky: "#E7B673" },
+  { accent: "#3E6E6A", sky: "#A9CFC7" },
+  { accent: "#43506B", sky: "#C7D2E3" },
+  { accent: "#6B4C6E", sky: "#C9B7CE" },
+  { accent: "#7A3B2E", sky: "#E3AE8C" },
+  { accent: "#B08A2E", sky: "#F0D98C" },
+];
+
+function colorsForId(id) {
+  let hash = 0;
+  for (let i = 0; i < String(id).length; i++) hash = (hash * 31 + String(id).charCodeAt(i)) >>> 0;
+  return ACCENT_PALETTE[hash % ACCENT_PALETTE.length];
+}
+
+// Real database rows don't have every field the demo data has (no reviews
+// system yet, no chosen illustration colors) — this fills in sensible
+// defaults so real barns render with the exact same components as demo ones.
+function mapDbBarnToAppShape(row) {
+  const colors = colorsForId(row.id);
+  return {
+    id: row.id,
+    name: row.name,
+    keeper: row.profiles?.full_name || "the owner",
+    town: row.town,
+    state: row.state,
+    price: row.price,
+    board: row.board_type,
+    stalls: row.stalls,
+    established: row.created_at ? new Date(row.created_at).getFullYear() : null,
+    rating: null,
+    reviews: 0,
+    lat: row.lat,
+    lon: row.lon,
+    accent: colors.accent,
+    sky: colors.sky,
+    tags: row.tags || [],
+    turnout: row.turnout || "Not specified yet",
+    arena: row.arena || "Not specified yet",
+    trails: row.trails || "Not specified yet",
+    tagline: row.tagline || "",
+    story: row.story || "",
+    amenities: row.amenities || [],
+    isReal: true,
+  };
+}
+
+async function fetchAllBarns() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/barns?select=*,profiles(full_name)&order=created_at.desc`,
+      { headers: { apikey: SUPABASE_KEY } }
+    );
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return [];
+    return rows.map(mapDbBarnToAppShape);
+  } catch {
+    // if this fails (offline, sandboxed preview, etc.) the app just shows
+    // the demo barns — never a broken page
+    return [];
+  }
 }
 
 const BARNS = [
@@ -962,8 +1088,14 @@ function BarnCard({ barn, onOpen, saved, onToggleSave, distance }) {
           <MapPin size={13} />
           <span>{barn.town}, {barn.state}</span>
           <span className="mx-1">·</span>
-          <Star size={13} fill="#B78A4A" color="#B78A4A" />
-          <span>{barn.rating} ({barn.reviews})</span>
+          {barn.rating != null ? (
+            <>
+              <Star size={13} fill="#B78A4A" color="#B78A4A" />
+              <span>{barn.rating} ({barn.reviews})</span>
+            </>
+          ) : (
+            <span style={{ color: "#8A6D3B" }}>New listing</span>
+          )}
           {distance != null && (
             <>
               <span className="mx-1">·</span>
@@ -1069,8 +1201,14 @@ function BarnDetail({ barn, onBack, saved, onToggleSave, distance }) {
         <div className="pt-6 pb-8 px-6 md:px-8">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm" style={{ color: "#5C5240" }}>
             <span className="flex items-center gap-1.5"><MapPin size={14} /> {barn.town}, {barn.state}</span>
-            <span className="flex items-center gap-1.5"><Star size={14} fill="#B78A4A" color="#B78A4A" /> {barn.rating} · {barn.reviews} reviews</span>
-            <span className="flex items-center gap-1.5"><Clock size={14} /> Boarding since {barn.established}</span>
+            {barn.rating != null ? (
+              <span className="flex items-center gap-1.5"><Star size={14} fill="#B78A4A" color="#B78A4A" /> {barn.rating} · {barn.reviews} reviews</span>
+            ) : (
+              <span className="flex items-center gap-1.5" style={{ color: "#8A6D3B" }}>New listing</span>
+            )}
+            {barn.established != null && (
+              <span className="flex items-center gap-1.5"><Clock size={14} /> Boarding since {barn.established}</span>
+            )}
             <span className="flex items-center gap-1.5"><Users size={14} /> Kept by {barn.keeper}</span>
             {distance != null && (
               <span className="flex items-center gap-1.5" style={{ color: "#8A6D3B" }}>
@@ -1620,6 +1758,264 @@ function AuthScreen({ onAuthed }) {
   );
 }
 
+/* ------------------------------- OWNER DASHBOARD ----------------------------- */
+
+function FieldInput({ label, value, onChange, placeholder, type = "text", required = false }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-semibold mb-1.5" style={{ color: "#5C5240" }}>{label}</span>
+      <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        required={required}
+        className="w-full px-3.5 py-2.5 rounded-lg text-sm outline-none"
+        style={{ background: "#F3ECD8", color: "#2A241D" }}
+      />
+    </label>
+  );
+}
+
+function FieldTextarea({ label, value, onChange, placeholder, rows = 3 }) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-semibold mb-1.5" style={{ color: "#5C5240" }}>{label}</span>
+      <textarea
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        rows={rows}
+        className="w-full px-3.5 py-2.5 rounded-lg text-sm outline-none resize-none"
+        style={{ background: "#F3ECD8", color: "#2A241D" }}
+      />
+    </label>
+  );
+}
+
+function BarnForm({ session, onCreated, onCancel }) {
+  const [form, setForm] = useState({
+    name: "", town: "", state: "", price: "", boardType: "Full Care",
+    stalls: "", tagline: "", story: "", turnout: "", arena: "", trails: "",
+    amenities: "", tags: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setSaving(true);
+    try {
+      const { lat, lon } = await geocodeTownState(form.town, form.state);
+      const barn = {
+        owner_id: session.user.id,
+        name: form.name,
+        town: form.town,
+        state: form.state,
+        lat,
+        lon,
+        price: form.price ? parseInt(form.price, 10) : null,
+        board_type: form.boardType,
+        stalls: form.stalls ? parseInt(form.stalls, 10) : null,
+        tagline: form.tagline,
+        story: form.story,
+        turnout: form.turnout,
+        arena: form.arena,
+        trails: form.trails,
+        amenities: form.amenities.split(",").map((s) => s.trim()).filter(Boolean),
+        tags: form.tags.split(",").map((s) => s.trim()).filter(Boolean),
+      };
+      await createBarn(barn, session.access_token);
+      onCreated();
+    } catch (err) {
+      setError(err.message || "Something went wrong saving that barn");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid sm:grid-cols-2 gap-4">
+        <FieldInput label="Barn name" value={form.name} onChange={set("name")} placeholder="Willow Creek Farm" required />
+        <FieldInput label="Tagline" value={form.tagline} onChange={set("tagline")} placeholder="A quiet valley barn built around turnout." />
+      </div>
+
+      <div className="grid sm:grid-cols-3 gap-4">
+        <FieldInput label="Town" value={form.town} onChange={set("town")} placeholder="Turnbridge" required />
+        <FieldInput label="State" value={form.state} onChange={set("state")} placeholder="VT" required />
+        <label className="block">
+          <span className="block text-xs font-semibold mb-1.5" style={{ color: "#5C5240" }}>Board type</span>
+          <select
+            value={form.boardType}
+            onChange={set("boardType")}
+            className="w-full px-3.5 py-2.5 rounded-lg text-sm outline-none"
+            style={{ background: "#F3ECD8", color: "#2A241D" }}
+          >
+            {BOARD_TYPES.filter((t) => t !== "All types").map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-4">
+        <FieldInput label="Price per month ($)" type="number" value={form.price} onChange={set("price")} placeholder="640" required />
+        <FieldInput label="Stalls available" type="number" value={form.stalls} onChange={set("stalls")} placeholder="4" />
+      </div>
+
+      <FieldTextarea label="Full description" value={form.story} onChange={set("story")} placeholder="Tell renters about your barn — the people, the routine, what makes it worth boarding here." rows={4} />
+
+      <div className="grid sm:grid-cols-3 gap-4">
+        <FieldInput label="Turnout" value={form.turnout} onChange={set("turnout")} placeholder="Turned out 10+ hrs daily" />
+        <FieldInput label="Arena" value={form.arena} onChange={set("arena")} placeholder="80x180 indoor arena" />
+        <FieldInput label="Trails" value={form.trails} onChange={set("trails")} placeholder="State forest trail access" />
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-4">
+        <FieldInput label="Amenities (comma separated)" value={form.amenities} onChange={set("amenities")} placeholder="Heated wash stall, Tack lockers" />
+        <FieldInput label="Tags (comma separated)" value={form.tags} onChange={set("tags")} placeholder="Indoor Arena, Trainer On-Site" />
+      </div>
+
+      {error && (
+        <div
+          className="text-sm px-3.5 py-3 rounded-lg font-medium"
+          style={{ background: "rgba(122,46,40,0.12)", color: "#7A2E28", border: "1px solid rgba(122,46,40,0.3)" }}
+        >
+          ⚠ {error}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          type="submit"
+          disabled={saving}
+          className="text-sm font-semibold px-6 py-3 rounded-full transition hover:opacity-90 disabled:opacity-60"
+          style={{ background: "#7A2E28", color: "#F6EFDD" }}
+        >
+          {saving ? "Saving…" : "List this barn"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-sm font-semibold px-5 py-3 rounded-full"
+          style={{ color: "#5C5240" }}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function MyBarnCard({ barn, onDelete }) {
+  return (
+    <div className="rounded-xl p-4 flex items-start justify-between gap-4" style={{ background: "#E4D8BE" }}>
+      <div>
+        <div className="font-bold text-sm" style={{ fontFamily: "'Bitter', serif", color: "#2A241D" }}>{barn.name}</div>
+        <div className="text-xs mt-1" style={{ color: "#5C5240" }}>
+          {barn.town}, {barn.state} · ${barn.price}/mo · {barn.board_type}
+        </div>
+        {!barn.lat && (
+          <div className="text-xs mt-1" style={{ color: "#8A6D3B" }}>No map location yet — couldn't find that town automatically.</div>
+        )}
+      </div>
+      <button
+        onClick={() => onDelete(barn.id)}
+        className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition hover:opacity-80"
+        style={{ background: "rgba(122,46,40,0.1)", color: "#7A2E28" }}
+        aria-label="Delete barn"
+      >
+        <Trash2 size={14} />
+      </button>
+    </div>
+  );
+}
+
+function OwnerDashboard({ session }) {
+  const [myBarns, setMyBarns] = useState([]);
+  const [loadingBarns, setLoadingBarns] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadBarns = async () => {
+    setLoadingBarns(true);
+    setError("");
+    try {
+      const rows = await fetchMyBarns(session.user.id, session.access_token);
+      setMyBarns(rows);
+    } catch {
+      setError("Couldn't load your barns right now.");
+    } finally {
+      setLoadingBarns(false);
+    }
+  };
+
+  useEffect(() => {
+    loadBarns();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleCreated = () => {
+    setShowForm(false);
+    loadBarns();
+  };
+
+  const handleDelete = async (id) => {
+    if (typeof window !== "undefined" && !window.confirm("Remove this barn listing?")) return;
+    try {
+      await deleteBarn(id, session.access_token);
+      setMyBarns((b) => b.filter((x) => x.id !== id));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-5 md:px-8 pt-10 pb-24">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold" style={{ fontFamily: "'Bitter', serif", color: "#F6EFDD" }}>
+          Your barns
+        </h1>
+        {!showForm && (
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-full transition hover:opacity-90"
+            style={{ background: "#B78A4A", color: "#1B2A1E" }}
+          >
+            <Plus size={15} /> Add a barn
+          </button>
+        )}
+      </div>
+
+      {showForm ? (
+        <div className="rounded-2xl p-6" style={{ background: "#E4D8BE" }}>
+          <BarnForm session={session} onCreated={handleCreated} onCancel={() => setShowForm(false)} />
+        </div>
+      ) : loadingBarns ? (
+        <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading your barns…</p>
+      ) : myBarns.length === 0 ? (
+        <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
+          <p className="text-sm" style={{ color: "#C9C2AC" }}>
+            You haven't listed a barn yet. Click "Add a barn" to create your first listing.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {myBarns.map((b) => (
+            <MyBarnCard key={b.id} barn={b} onDelete={handleDelete} />
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <p className="text-sm mt-4" style={{ color: "#D7B679" }}>{error}</p>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------- MAIN APP -------------------------------- */
 
 function MainApp({ session, onLogout }) {
@@ -1632,6 +2028,13 @@ function MainApp({ session, onLogout }) {
   const [locStatus, setLocStatus] = useState("idle"); // idle | locating | granted | denied | manual
   const [radius, setRadius] = useState("any");
   const [subview, setSubview] = useState("list"); // list | map
+  const [realBarns, setRealBarns] = useState([]);
+
+  useEffect(() => {
+    fetchAllBarns().then(setRealBarns);
+  }, []);
+
+  const ALL_BARNS = useMemo(() => [...BARNS, ...realBarns], [realBarns]);
 
   const toggleSave = (id) =>
     setSaved((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -1669,7 +2072,7 @@ function MainApp({ session, onLogout }) {
   };
 
   const filtered = useMemo(() => {
-    let list = BARNS.map((b) => ({
+    let list = ALL_BARNS.map((b) => ({
       ...b,
       distance: userLoc ? distanceMiles(userLoc.lat, userLoc.lon, b.lat, b.lon) : null,
     }));
@@ -1690,14 +2093,14 @@ function MainApp({ session, onLogout }) {
     if (sort === "rating") list = [...list].sort((a, b) => b.rating - a.rating);
     if (sort === "distance" && userLoc) list = [...list].sort((a, b) => a.distance - b.distance);
     return list;
-  }, [query, boardType, sort, userLoc, radius]);
+  }, [query, boardType, sort, userLoc, radius, ALL_BARNS]);
 
   const openBarn = (id) => {
     setView({ page: "detail", id });
     window.scrollTo?.(0, 0);
   };
 
-  const activeBarn = view.page === "detail" ? BARNS.find((b) => b.id === view.id) : null;
+  const activeBarn = view.page === "detail" ? ALL_BARNS.find((b) => b.id === view.id) : null;
   const activeBarnDistance =
     activeBarn && userLoc ? distanceMiles(userLoc.lat, userLoc.lon, activeBarn.lat, activeBarn.lon) : null;
 
@@ -1722,6 +2125,18 @@ function MainApp({ session, onLogout }) {
             </span>
           </div>
           <div className="flex items-center gap-3">
+            {session?.profile?.role === "owner" && (
+              <button
+                onClick={() => setView({ page: "owner" })}
+                className="text-xs font-semibold px-3 py-1.5 rounded-full transition hover:opacity-85"
+                style={{
+                  background: view.page === "owner" ? "#B78A4A" : "rgba(246,239,221,0.1)",
+                  color: view.page === "owner" ? "#1B2A1E" : "#F6EFDD",
+                }}
+              >
+                My Barns
+              </button>
+            )}
             <span
               className="hidden sm:inline text-[10px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full"
               style={{ background: "rgba(183,138,74,0.18)", color: "#D7B679", fontFamily: "'Work Sans', sans-serif" }}
@@ -1738,6 +2153,8 @@ function MainApp({ session, onLogout }) {
           </div>
         </div>
       </div>
+
+      {view.page === "owner" && <OwnerDashboard session={session} />}
 
       {view.page === "home" && (
         <>
