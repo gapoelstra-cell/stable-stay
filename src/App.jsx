@@ -123,6 +123,16 @@ async function fetchMyBarns(ownerId, accessToken) {
   return Array.isArray(data) ? data : [];
 }
 
+async function deleteAccount(accessToken) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, apikey: SUPABASE_KEY },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || "Couldn't delete your account");
+  return data;
+}
+
 async function deleteBarn(barnId, accessToken) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/barns?id=eq.${barnId}`, {
     method: "DELETE",
@@ -2058,6 +2068,118 @@ function MyBarnCard({ barn, onDelete }) {
   );
 }
 
+/* --------------------------------- PROFILE SIDEBAR --------------------------- */
+
+function ProfileSidebar({ session, onClose, onLogout, onDeleted }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+
+  const memberSince = session.profile?.created_at
+    ? new Date(session.profile.created_at).toLocaleDateString(undefined, { month: "long", year: "numeric" })
+    : null;
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setError("");
+    try {
+      await deleteAccount(session.access_token);
+      onDeleted();
+    } catch (err) {
+      setError(err.message || "Couldn't delete your account right now");
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
+      <div
+        className="fixed top-0 right-0 h-full w-full max-w-sm z-50 overflow-y-auto"
+        style={{ background: "#1B2A1E", boxShadow: "-8px 0 30px rgba(0,0,0,0.4)" }}
+      >
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-lg font-bold" style={{ fontFamily: "'Bitter', serif", color: "#F6EFDD" }}>
+              Your account
+            </h2>
+            <button onClick={onClose} className="opacity-70 hover:opacity-100">
+              <X size={18} color="#F6EFDD" />
+            </button>
+          </div>
+
+          <div className="rounded-2xl p-5 mb-5" style={{ background: "#E4D8BE" }}>
+            <div className="w-12 h-12 rounded-full flex items-center justify-center mb-3" style={{ background: "#B78A4A" }}>
+              <UserIcon size={22} color="#1B2A1E" />
+            </div>
+            <div className="font-bold" style={{ fontFamily: "'Bitter', serif", color: "#2A241D" }}>
+              {session.profile?.full_name || "Your account"}
+            </div>
+            <div className="text-sm mt-0.5" style={{ color: "#5C5240" }}>{session.user.email}</div>
+            <span
+              className="inline-block mt-3 text-[10px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full"
+              style={{ background: "rgba(122,46,40,0.1)", color: "#7A2E28" }}
+            >
+              {session.profile?.role === "owner" ? "Barn owner" : "Renter"}
+            </span>
+            {memberSince && (
+              <div className="text-xs mt-3" style={{ color: "#8A6D3B" }}>Member since {memberSince}</div>
+            )}
+          </div>
+
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center justify-center gap-2 text-sm font-semibold py-3 rounded-full transition hover:opacity-90 mb-8"
+            style={{ background: "rgba(246,239,221,0.1)", color: "#F6EFDD" }}
+          >
+            <LogOut size={15} /> Log out
+          </button>
+
+          <div className="pt-6" style={{ borderTop: "1px solid rgba(246,239,221,0.12)" }}>
+            <h3 className="text-xs font-bold uppercase tracking-wide mb-3" style={{ color: "#D7796F" }}>
+              Danger zone
+            </h3>
+
+            {!confirmingDelete ? (
+              <button
+                onClick={() => setConfirmingDelete(true)}
+                className="text-sm font-semibold px-4 py-2.5 rounded-full"
+                style={{ background: "rgba(122,46,40,0.15)", color: "#D7796F" }}
+              >
+                Delete account
+              </button>
+            ) : (
+              <div className="rounded-xl p-4" style={{ background: "rgba(122,46,40,0.12)", border: "1px solid rgba(122,46,40,0.3)" }}>
+                <p className="text-sm font-medium mb-3" style={{ color: "#F6EFDD" }}>
+                  This permanently deletes your account, any barns you've listed, and your inquiries. This can't be undone.
+                </p>
+                {error && <p className="text-xs mb-3" style={{ color: "#D7796F" }}>{error}</p>}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    className="text-sm font-semibold px-4 py-2.5 rounded-full disabled:opacity-60"
+                    style={{ background: "#7A2E28", color: "#F6EFDD" }}
+                  >
+                    {deleting ? "Deleting…" : "Yes, delete my account"}
+                  </button>
+                  <button
+                    onClick={() => setConfirmingDelete(false)}
+                    className="text-sm font-semibold px-4 py-2.5 rounded-full"
+                    style={{ color: "#C9C2AC" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function InquiryCard({ inquiry }) {
   const when = inquiry.created_at ? new Date(inquiry.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
   return (
@@ -2236,6 +2358,7 @@ function MainApp({ session, onLogout }) {
   const [radius, setRadius] = useState("any");
   const [subview, setSubview] = useState("list"); // list | map
   const [realBarns, setRealBarns] = useState([]);
+  const [showProfile, setShowProfile] = useState(false);
 
   useEffect(() => {
     fetchAllBarns().then(setRealBarns);
@@ -2344,22 +2467,26 @@ function MainApp({ session, onLogout }) {
                 My Barns
               </button>
             )}
-            <span
-              className="hidden sm:inline text-[10px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full"
-              style={{ background: "rgba(183,138,74,0.18)", color: "#D7B679", fontFamily: "'Work Sans', sans-serif" }}
-            >
-              {session?.profile?.role === "owner" ? "Barn owner" : "Renter"} account
-            </span>
             <button
-              onClick={onLogout}
-              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition hover:opacity-85"
-              style={{ background: "rgba(246,239,221,0.1)", color: "#F6EFDD" }}
+              onClick={() => setShowProfile(true)}
+              className="w-8 h-8 rounded-full flex items-center justify-center transition hover:opacity-85"
+              style={{ background: "#B78A4A" }}
+              aria-label="Your account"
             >
-              <LogOut size={13} /> Log out
+              <UserIcon size={15} color="#1B2A1E" />
             </button>
           </div>
         </div>
       </div>
+
+      {showProfile && (
+        <ProfileSidebar
+          session={session}
+          onClose={() => setShowProfile(false)}
+          onLogout={onLogout}
+          onDeleted={onLogout}
+        />
+      )}
 
       {view.page === "owner" && <OwnerDashboard session={session} />}
 
