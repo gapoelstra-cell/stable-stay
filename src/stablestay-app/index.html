@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>StableStay</title>
+
+    <!-- PWA: makes the app installable on Android/iOS home screens -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1B2A1E" />
+
+    <!-- Android / Chrome install icon -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+
+    <!-- iOS Safari specific tags — iOS ignores manifest.json for some of this -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="StableStay" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
+
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
