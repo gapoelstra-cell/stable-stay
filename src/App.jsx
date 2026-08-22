@@ -133,6 +133,21 @@ async function deleteAccount(accessToken) {
   return data;
 }
 
+async function connectStripeAccount(accessToken) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/stripe-connect-onboarding`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      apikey: SUPABASE_KEY,
+    },
+    body: JSON.stringify({ origin: typeof window !== "undefined" ? window.location.origin : "" }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || "Couldn't start Stripe onboarding");
+  return data.url;
+}
+
 async function deleteBarn(barnId, accessToken) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/barns?id=eq.${barnId}`, {
     method: "DELETE",
@@ -2214,9 +2229,13 @@ function OwnerDashboard({ session }) {
   const [loadingBarns, setLoadingBarns] = useState(true);
   const [inquiries, setInquiries] = useState([]);
   const [loadingInquiries, setLoadingInquiries] = useState(true);
-  const [tab, setTab] = useState("barns"); // barns | inquiries
+  const [tab, setTab] = useState("barns"); // barns | inquiries | payouts
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState("");
+
+  const stripeConnected = Boolean(session.profile?.stripe_account_id);
 
   const loadBarns = async () => {
     setLoadingBarns(true);
@@ -2264,9 +2283,115 @@ function OwnerDashboard({ session }) {
     }
   };
 
+  const handleConnectStripe = async () => {
+    setConnecting(true);
+    setConnectError("");
+    try {
+      const url = await connectStripeAccount(session.access_token);
+      if (typeof window !== "undefined") window.location.href = url;
+    } catch (err) {
+      setConnectError(err.message || "Something went wrong");
+      setConnecting(false);
+    }
+  };
+
+  let content;
+  if (tab === "barns") {
+    if (showForm) {
+      content = (
+        <div className="rounded-2xl p-6" style={{ background: "#E4D8BE" }}>
+          <BarnForm session={session} onCreated={handleCreated} onCancel={() => setShowForm(false)} />
+        </div>
+      );
+    } else if (loadingBarns) {
+      content = <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading your barns…</p>;
+    } else if (myBarns.length === 0) {
+      content = (
+        <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
+          <p className="text-sm" style={{ color: "#C9C2AC" }}>
+            You haven't listed a barn yet. Click "Add a barn" to create your first listing.
+          </p>
+        </div>
+      );
+    } else {
+      content = (
+        <div className="space-y-3">
+          {myBarns.map((b) => (
+            <MyBarnCard key={b.id} barn={b} onDelete={handleDelete} />
+          ))}
+        </div>
+      );
+    }
+  } else if (tab === "inquiries") {
+    if (loadingInquiries) {
+      content = <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading inquiries…</p>;
+    } else if (inquiries.length === 0) {
+      content = (
+        <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
+          <p className="text-sm" style={{ color: "#C9C2AC" }}>
+            No one has requested a stall yet. Once a renter reaches out about one of your barns, it'll show up here.
+          </p>
+        </div>
+      );
+    } else {
+      content = (
+        <div className="space-y-3">
+          {inquiries.map((inq) => (
+            <InquiryCard key={inq.id} inquiry={inq} />
+          ))}
+        </div>
+      );
+    }
+  } else {
+    // payouts tab
+    content = (
+      <div className="rounded-2xl p-6" style={{ background: "#E4D8BE" }}>
+        {stripeConnected ? (
+          <div className="flex items-center gap-3">
+            <ShieldCheck size={20} style={{ color: "#4C6B4F" }} />
+            <div>
+              <div className="font-bold text-sm" style={{ fontFamily: "'Bitter', serif", color: "#2A241D" }}>
+                Stripe connected
+              </div>
+              <p className="text-xs mt-0.5" style={{ color: "#5C5240" }}>
+                Payments to your barns will be sent to your connected Stripe account, minus the platform fee.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="font-bold text-sm mb-1.5" style={{ fontFamily: "'Bitter', serif", color: "#2A241D" }}>
+              Connect payouts
+            </div>
+            <p className="text-sm mb-4" style={{ color: "#5C5240" }}>
+              To get paid when a renter books through StableStay, connect a Stripe account. It only takes a few
+              minutes — Stripe handles verifying your identity and bank details.
+            </p>
+            {connectError && (
+              <div
+                className="text-sm px-3.5 py-3 rounded-lg font-medium mb-3"
+                style={{ background: "rgba(122,46,40,0.12)", color: "#7A2E28", border: "1px solid rgba(122,46,40,0.3)" }}
+              >
+                ⚠ {connectError}
+              </div>
+            )}
+            <button
+              onClick={handleConnectStripe}
+              disabled={connecting}
+              className="text-sm font-semibold px-5 py-2.5 rounded-full transition hover:opacity-90 disabled:opacity-60"
+              style={{ background: "#7A2E28", color: "#F6EFDD" }}
+            >
+              {connecting ? "One moment…" : "Connect with Stripe"}
+            </button>
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-4xl mx-auto px-5 md:px-8 pt-10 pb-24">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <button
             onClick={() => setTab("barns")}
@@ -2290,6 +2415,16 @@ function OwnerDashboard({ session }) {
               </span>
             )}
           </button>
+          <button
+            onClick={() => setTab("payouts")}
+            className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-full transition"
+            style={{ background: tab === "payouts" ? "#B78A4A" : "transparent", color: tab === "payouts" ? "#1B2A1E" : "#F6EFDD" }}
+          >
+            Payouts
+            {!stripeConnected && (
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: "#D7796F" }} />
+            )}
+          </button>
         </div>
         {tab === "barns" && !showForm && (
           <button
@@ -2302,41 +2437,7 @@ function OwnerDashboard({ session }) {
         )}
       </div>
 
-      {tab === "barns" ? (
-        showForm ? (
-          <div className="rounded-2xl p-6" style={{ background: "#E4D8BE" }}>
-            <BarnForm session={session} onCreated={handleCreated} onCancel={() => setShowForm(false)} />
-          </div>
-        ) : loadingBarns ? (
-          <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading your barns…</p>
-        ) : myBarns.length === 0 ? (
-          <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
-            <p className="text-sm" style={{ color: "#C9C2AC" }}>
-              You haven't listed a barn yet. Click "Add a barn" to create your first listing.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {myBarns.map((b) => (
-              <MyBarnCard key={b.id} barn={b} onDelete={handleDelete} />
-            ))}
-          </div>
-        )
-      ) : loadingInquiries ? (
-        <p className="text-sm" style={{ color: "#C9C2AC" }}>Loading inquiries…</p>
-      ) : inquiries.length === 0 ? (
-        <div className="rounded-2xl p-8 text-center" style={{ background: "rgba(246,239,221,0.06)" }}>
-          <p className="text-sm" style={{ color: "#C9C2AC" }}>
-            No one has requested a stall yet. Once a renter reaches out about one of your barns, it'll show up here.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {inquiries.map((inq) => (
-            <InquiryCard key={inq.id} inquiry={inq} />
-          ))}
-        </div>
-      )}
+      {content}
 
       {error && (
         <p className="text-sm mt-4" style={{ color: "#D7B679" }}>{error}</p>
